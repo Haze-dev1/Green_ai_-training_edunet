@@ -1,75 +1,107 @@
+import os
 from pathlib import Path
 
 import numpy as np
 import streamlit as st
+from PIL import Image, ImageOps
 from tensorflow import keras
-from tensorflow.keras.datasets import mnist
 
 st.set_page_config(page_title="Digit Classifier", page_icon="✍️")
-st.title("✍️ Digit Classifier")
-st.write("The model will show you a digit — guess what it is!")
+st.title("Handwritten Digit Classifier")
+st.write("Upload an image of a single handwritten digit (0-9) to get a prediction.")
 
 ROOT_DIR = Path(__file__).resolve().parent
-MODEL_PATH = ROOT_DIR / "digit_classifier_model.keras"
+POSSIBLE_MODEL_FILES = [
+    ROOT_DIR / "digit_classifier_model.keras",
+    ROOT_DIR / "digit_classifiermodel.keras",
+]
+
+
+def get_model_path() -> Path:
+    for model_path in POSSIBLE_MODEL_FILES:
+        if model_path.exists():
+            return model_path
+    raise FileNotFoundError(import matplotlib.pyplot as plt
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+        "Could not find digit classifier model. Expected one of: "
+        + ", ".join(str(p.name) for p in POSSIBLE_MODEL_FILES)
+    )
 
 
 @st.cache_resource
 def load_model():
-    return keras.models.load_model(MODEL_PATH)
+    model_path = get_model_path()
+    return keras.models.load_model(model_path), model_path
 
 
-@st.cache_data
-def load_data():
-    (_, _), (x_test, y_test) = mnist.load_data()
-    x_test = x_test.reshape(-1, 784).astype("float32") / 255.0
-    return x_test, y_test
+def preprocess_image(uploaded_file, target_height: int, target_width: int, channels: int):
+    image = Image.open(uploaded_file)
+
+    if channels == 1:
+        image = ImageOps.grayscale(image)
+    else:
+        image = image.convert("RGB")
+
+    image = image.resize((target_width, target_height))
+
+    img_array = np.array(image, dtype=np.float32)
+
+    if channels == 1:
+        if img_array.ndim == 2:
+            img_array = np.expand_dims(img_array, axis=-1)
+    else:
+        if img_array.ndim == 2:
+            img_array = np.stack([img_array] * 3, axis=-1)
+
+    img_array = img_array / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+    return image, img_array
 
 
-model = load_model()
-x_test, y_test = load_data()
+try:
+    model, model_path = load_model()
+    st.success(f"Loaded model: {model_path.name}")
+except Exception as error:
+    st.error(f"Model could not be loaded: {error}")
+    st.stop()
 
-if "index" not in st.session_state:
-    st.session_state.index = np.random.randint(0, len(x_test))
-if "answered" not in st.session_state:
-    st.session_state.answered = False
+input_shape = model.input_shape
+if isinstance(input_shape, list):
+    input_shape = input_shape[0]
 
-idx = st.session_state.index
-sample = x_test[idx]
-true_label = int(y_test[idx])
+_, height, width, channels = input_shape
 
-img_display = (sample.reshape(28, 28) * 255).astype("uint8")
-st.image(img_display, width=200, caption="What digit is this?")
+uploaded_file = st.file_uploader(
+    "Upload digit image",
+    type=["png", "jpg", "jpeg"],
+)
 
-guess = st.number_input("Your guess (0–9):", min_value=0, max_value=9, step=1)
+if uploaded_file is not None:
+    preview_img, processed = preprocess_image(
+        uploaded_file,
+        target_height=height,
+        target_width=width,
+        channels=channels,
+    )
 
-col1, col2 = st.columns(2)
+    st.image(preview_img, caption="Processed input image", width=200)
 
-with col1:
-    if st.button("Submit"):
-        prediction = model.predict(sample.reshape(1, 784), verbose=0)[0]
-        predicted_digit = int(np.argmax(prediction))
-        confidence = float(np.max(prediction))
+    if st.button("Predict Digit"):
+        prediction = model.predict(processed, verbose=0)
 
-        st.write("---")
-        st.write(f"**True label:** {true_label}")
-        st.write(
-            f"**Model prediction:** {predicted_digit} ({confidence:.1%} confident)"
-        )
+        if prediction.ndim == 2 and prediction.shape[1] > 1:
+            predicted_digit = int(np.argmax(prediction[0]))
+            confidence = float(np.max(prediction[0]))
+            st.subheader(f"Prediction: {predicted_digit}")
+            st.write(f"Confidence: {confidence:.2%}")
 
-        if guess == true_label:
-            st.success("You got it right!")
+            st.write("Class probabilities:")
+            for i, prob in enumerate(prediction[0]):
+                st.write(f"{i}: {prob:.2%}")
         else:
-            st.error(f"Wrong! It was a {true_label}.")
-
-        if predicted_digit == true_label:
-            st.info("The model got it right too.")
-        else:
-            st.warning("The model got it wrong.")
-
-        st.session_state.answered = True
-
-with col2:
-    if st.button("Next Digit"):
-        st.session_state.index = np.random.randint(0, len(x_test))
-        st.session_state.answered = False
-        st.rerun()
+            predicted_value = float(prediction.squeeze())
+            st.subheader(f"Prediction output: {predicted_value:.4f}")
